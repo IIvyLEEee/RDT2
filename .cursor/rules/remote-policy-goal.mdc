@@ -75,7 +75,7 @@ conda run --no-capture-output -n rdt2 python deploy/smoke_remote_policy_fm.py \
 cd /home/acts00/RDT2
 conda run --no-capture-output -n rdt2 python deploy/inference_real_fm.py \
   --input ckpt/rdt2-fm \
-  --output <your_output_directory> \
+  --output outputs/ \
   --pretrained_vision_language_model_name_or_path ckpt/rdt2-vq \
   --normalizer_path ckpt/umi_normalizer_wo_downsample_indentity_rot.pt \
   --model_config configs/rdt/post_train.yaml \
