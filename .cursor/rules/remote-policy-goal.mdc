@@ -20,3 +20,80 @@ alwaysApply: true
 - 在和user对话过程中任何需要明确到rule方便后续遵守的东西，写到下方增量rule里。
 
 4070 pwd: acts8798!!
+
+## Remote Test Context
+
+- 5090/RDT2 工作区：`/home/liyixuan23/RDT2`。
+- 5090 局域网 IP：`192.168.3.185`。
+- 4070 机器：`acts00@192.168.3.42`。
+- 4070/RDT2 唯一允许工作区：`/home/acts00/RDT2`；除该目录外，严禁修改、移动或写入 4070 上的其他文件。
+- 4070 当前还没有正式连接/启动机械臂和相机；验证阶段拿不到输入、UR5e 未启动或硬件初始化失败是正常现象。
+- 5090 与 4070 的 RDT2 仓库通过同一个远程 GitHub 仓库同步；需要同步代码时优先使用 git pull/push。
+- 4070 配环境按 README 的正常 conda 流程创建 `rdt2` 环境即可：`conda create -n rdt2 python=3.10 -y`、安装 torch/cu128、flash-attn、`requirements.txt`、`nvidia-nccl-cu12==2.27.5`、`requirements/ur5e.txt`。
+- 4070 可以使用系统/用户默认 pip cache、conda cache 等正常缓存位置；不要求把安装包缓存限制在 RDT2 工作区内。
+- 4070 是 Ubuntu 22.04；如果遇到因系统版本较低导致很难解决的硬件/系统依赖，且运行 simple remote client 不需要，可以先放过。
+- 每完成一个阶段性任务，把精简进度记录到本 rule 的 “Progress Log”。
+
+## Local Checkpoint Paths
+
+- RDT2-FM action expert：`ckpt/rdt2-fm`。
+- RDT2-VQ / Qwen2.5-VL backbone：`ckpt/rdt2-vq`。
+- normalizer：`ckpt/umi_normalizer_wo_downsample_indentity_rot.pt`。
+- model config：`configs/rdt/post_train.yaml`。
+- data config：`configs/bimanual_video_data.yaml`。
+- UR5e robot config：`configs/robots/eval_bimanual_ur5e_config.yaml`。
+
+## Remote Policy Commands
+
+5090 server：
+
+```bash
+cd /home/liyixuan23/RDT2
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1 \
+conda run --no-capture-output -n rdt2 python deploy/serve_policy_fm.py \
+  --input ckpt/rdt2-fm \
+  --pretrained_vision_language_model_name_or_path ckpt/rdt2-vq \
+  --normalizer_path ckpt/umi_normalizer_wo_downsample_indentity_rot.pt \
+  --model_config configs/rdt/post_train.yaml \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+5090 local smoke client：
+
+```bash
+cd /home/liyixuan23/RDT2
+TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 \
+conda run --no-capture-output -n rdt2 python deploy/smoke_remote_policy_fm.py \
+  --policy_server_host 127.0.0.1 \
+  --policy_server_port 8000
+```
+
+4070 real FM client, when robot/camera are ready：
+
+```bash
+cd /home/acts00/RDT2
+conda run --no-capture-output -n rdt2 python deploy/inference_real_fm.py \
+  --input ckpt/rdt2-fm \
+  --output <your_output_directory> \
+  --pretrained_vision_language_model_name_or_path ckpt/rdt2-vq \
+  --normalizer_path ckpt/umi_normalizer_wo_downsample_indentity_rot.pt \
+  --model_config configs/rdt/post_train.yaml \
+  --data_config configs/bimanual_video_data.yaml \
+  --robot_config configs/robots/eval_bimanual_ur5e_config.yaml \
+  --instruction "Pick up the pink snack bag with the right hand." \
+  --policy_server_host 192.168.3.185 \
+  --policy_server_port 8000
+```
+
+## Progress Log
+
+- 2026-05-07 20:44：已写入 4070 conda 环境策略；首次 SSH 尝试卡在握手/认证阶段，尚未确认能稳定进入 4070。
+- 2026-05-07 20:45：已通过 SSH 进入 4070 `/home/acts00/RDT2`，远端默认 `python3` 为 3.8.10，当前 git 分支为 `main`。
+- 2026-05-07 20:47：4070 已创建 conda 环境 `rdt2`，Python 版本为 3.10。
+- 2026-05-07 21:00：5090 server 首次启动失败，原因是 `rdt2` 环境中 `flash_attn` 与当前 torch 二进制不匹配，需重装 `flash-attn`。
+- 2026-05-07 21:16：4070 上 torch/cu128 安装已完成；当前没有 pip/conda 安装进程。4070 负载低、GPU 空闲；发现 `/home/acts00/openpi/ckpt` 下有多条 `gcloud storage cp ... pi05_base` 进程运行约 25 分钟，不属于 RDT2 工作区任务，未擅自终止。
+- 2026-05-07 21:27：按用户要求终止 4070 上 `gcloud.py storage cp --recursive gs://openpi-assets/checkpoints/pi05_base` 相关进程；确认已无匹配进程，`/home/acts00/openpi/ckpt` 约 12G。
+- 2026-05-07 21:48：5090 server 使用修复后的 `flash-attn` 后不再立刻崩溃，但卡在外部网络请求；已定位为 `RDTInferencer.get_vision_language_model()` 中 `AutoProcessor` 硬编码线上 `Qwen/Qwen2.5-VL-7B-Instruct`，已改为使用传入的本地 `ckpt/rdt2-vq` 路径。
+- 2026-05-07 21:53：5090 RDT2-FM server 已成功监听 `0.0.0.0:8000`；5090 本地 smoke client 返回 `actions` shape `(24, 20)`、dtype `float32`，单次随机观测推理约 820ms。
+- 2026-05-07 21:58：4070 的 `rdt2` 环境已安装 remote client 轻依赖 `websockets`、`msgpack`；4070 成功连接 5090 `192.168.3.185:8000`，随机观测返回 `actions` shape `(24, 20)`、dtype `float32`，server 推理约 110ms。
