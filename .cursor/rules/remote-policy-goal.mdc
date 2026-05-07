@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Remote Policy Goal
 
-当前目标是在 5090 机器上运行 RDT2 policy server，把 5090 作为远程推理端；同一局域网中 `192.168.3.78` 的 4070 机器连接真实机械臂和相机，负责采集观测、发送给 5090、接收动作并在机器人上执行。
+当前目标是在 5090 机器上运行 RDT2 policy server，把 5090 作为远程推理端；同一局域网中 `192.168.3.42` 的 4070 机器连接真实机械臂和相机，负责采集观测、发送给 5090、接收动作并在机器人上执行。
 
 实现方案应优先参考 `/home/liyixuan23/openpi` 中 `serve_policy` 与 `openpi-client` 的远程推理模式，以及 `docs/remote_inference.md` 的客户端/服务端职责划分。
 
@@ -19,7 +19,7 @@ alwaysApply: true
 - 只需要运行成功deploy/inference_real_fm.py，即使用RDT2-FM而非VQ进行推理。
 - 在和user对话过程中任何需要明确到rule方便后续遵守的东西，写到下方增量rule里。
 
-4070 pwd: acts8798!!
+4070 password is intentionally not committed. Use the local secret shared by the user when SSH access is needed.
 
 ## Remote Test Context
 
@@ -33,6 +33,13 @@ alwaysApply: true
 - 4070 可以使用系统/用户默认 pip cache、conda cache 等正常缓存位置；不要求把安装包缓存限制在 RDT2 工作区内。
 - 4070 是 Ubuntu 22.04；如果遇到因系统版本较低导致很难解决的硬件/系统依赖，且运行 simple remote client 不需要，可以先放过。
 - 每完成一个阶段性任务，把精简进度记录到本 rule 的 “Progress Log”。
+- 针对本地 setup 与上游默认 setup 不同而做的改动，不要直接删除源代码；应保留原代码并注释掉，再添加本地 setup 代码，方便之后回溯。
+
+## Physical Setup
+
+- 当前真实硬件是单臂 setup，不是 bimanual setup。
+- 当前相机是 GoPro / UVC capture-card 路径，不使用 HikRobot MVS；多余相机配置应注释掉，而不是删除。
+- 当前夹爪目标是 WSG50。`BimanualUmiEnv` 中已有 WSG50 相关代码但被注释；未来用户要求修 WSG50 时，再参考 `/home/liyixuan23/universal_manipulation_interface` 恢复 WSG50 代码并补齐必要实现。本阶段不要主动改 WSG50。
 
 ## Local Checkpoint Paths
 
@@ -97,3 +104,6 @@ conda run --no-capture-output -n rdt2 python deploy/inference_real_fm.py \
 - 2026-05-07 21:48：5090 server 使用修复后的 `flash-attn` 后不再立刻崩溃，但卡在外部网络请求；已定位为 `RDTInferencer.get_vision_language_model()` 中 `AutoProcessor` 硬编码线上 `Qwen/Qwen2.5-VL-7B-Instruct`，已改为使用传入的本地 `ckpt/rdt2-vq` 路径。
 - 2026-05-07 21:53：5090 RDT2-FM server 已成功监听 `0.0.0.0:8000`；5090 本地 smoke client 返回 `actions` shape `(24, 20)`、dtype `float32`，单次随机观测推理约 820ms。
 - 2026-05-07 21:58：4070 的 `rdt2` 环境已安装 remote client 轻依赖 `websockets`、`msgpack`；4070 成功连接 5090 `192.168.3.185:8000`，随机观测返回 `actions` shape `(24, 20)`、dtype `float32`，server 推理约 110ms。
+- 2026-05-08 01:12：4070 IP 更新为 `192.168.3.42` 后 SSH 正常；4070 到 5090 `192.168.3.185:8000` 连通。完整 `inference_real_fm.py` 卡住前输出 MVS import 失败；确认 4070 上 `/opt/MVS` 不存在，`MvCameraControl_class` 无法导入。
+- 2026-05-08 01:24：按 GoPro/UVC 相机方案修改 RDT2：`BimanualUmiEnv` 不再静态导入 MVS，`camera_type: uvc` 时走轻量 `MultiUvcCamera`/`UvcCamera`；UR5e camera config 已改为 UVC/GoPro。4070 检测到一个 Elgato UVC 设备；SSH 无头运行完整脚本会卡在 `pynput` 需要 DISPLAY，但 4070 本机桌面终端通常不受此影响。
+- 2026-05-08 01:28：按用户要求恢复被删除的 MVS import 为注释形式；UR5e robot config 已调整为单臂/单 GoPro，相机、第二机械臂、第二夹爪的上游 bimanual 配置均保留为注释。已同步到 4070。
