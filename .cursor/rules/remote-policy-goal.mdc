@@ -1,0 +1,22 @@
+---
+description: RDT2 remote policy inference goal across 5090 and 4070 machines
+alwaysApply: true
+---
+
+# Remote Policy Goal
+
+当前目标是在 5090 机器上运行 RDT2 policy server，把 5090 作为远程推理端；同一局域网中 `192.168.3.78` 的 4070 机器连接真实机械臂和相机，负责采集观测、发送给 5090、接收动作并在机器人上执行。
+
+实现方案应优先参考 `/home/liyixuan23/openpi` 中 `serve_policy` 与 `openpi-client` 的远程推理模式，以及 `docs/remote_inference.md` 的客户端/服务端职责划分。
+
+工程取向：
+
+- 最小化修改 RDT2 现有训练、模型加载和机器人执行代码。
+- 保持机器人依赖和 5090 推理依赖解耦。
+- 4070 客户端只承担真实硬件 I/O、观测预处理、网络请求和动作执行。
+- 5090 服务端只承担 checkpoint/config 加载、观测反序列化、模型推理和动作返回。
+- 网络接口应明确观测字段、图像格式、状态向量、任务指令、动作 chunk 形状和异常处理。
+- 只需要运行成功deploy/inference_real_fm.py，即使用RDT2-FM而非VQ进行推理。
+- 在和user对话过程中任何需要明确到rule方便后续遵守的东西，写到下方增量rule里。
+
+4070 pwd: acts8798!!

@@ -41,7 +41,6 @@ from PIL import Image, ImageTk
 import tkinter as tk
 
 from models.normalizer import LinearNormalizer
-from data.umi.common.pytorch_util import dict_apply
 from deploy.collision_utils import solve_table_collision
 from deploy.umi.common.precise_sleep import precise_wait
 from deploy.umi.real_world.bimanual_umi_env import BimanualUmiEnv
@@ -57,12 +56,40 @@ from deploy.umi.real_world.real_inference_util import (
 # from deploy.umi.real_world.spacemouse_shared_memory import Spacemouse
 from data.umi.pose_util import pose_to_mat, mat_to_pose, pose10d_to_mat, mat_to_pose10d
 from models.rdt_inferencer import RDTInferencer
+from deploy.remote_policy.websocket_policy import WebsocketClientPolicy
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 actions_records_save_path = 'actions_records'
 all_grippers = []
 actions_submit_time = []
+
+
+def build_policy_observation(obs_dict_np, state_dim, instruction):
+    return {
+        'images': {
+            # Keep this mapping aligned with the local RDT-FM deployment path.
+            'left_stereo': obs_dict_np['camera1_rgb'][-1].astype(np.uint8),
+            'right_stereo': obs_dict_np['camera0_rgb'][-1].astype(np.uint8),
+        },
+        'state': np.zeros(state_dim).astype(np.float32),
+        'instruction': instruction,
+    }
+
+
+def infer_policy_action(policy, policy_observation, use_remote_policy):
+    if use_remote_policy:
+        result = policy.infer(policy_observation)
+        return np.asarray(result['actions'], dtype=np.float32), result
+
+    result = policy.step(
+        observations={
+            'images': policy_observation['images'],
+            'state': policy_observation['state'],
+        },
+        instruction=policy_observation['instruction']
+    )
+    return result.detach().cpu().numpy(), {}
 
 def solve_sphere_collision(ee_poses, robots_config):
     num_robot = len(robots_config)
@@ -110,6 +137,9 @@ def solve_sphere_collision(ee_poses, robots_config):
 @click.option('--instruction', type=str, default=None)
 @click.option('--binarize_gripper', '-bg', is_flag=True, default=False, help="Binarize gripper action.")
 @click.option('--interact', is_flag=True, default=False, help="Interactive mode.")
+@click.option('--policy_server_host', default=None, help='Remote RDT2-FM policy server host. If unset, run policy locally.')
+@click.option('--policy_server_port', default=8000, show_default=True, type=int, help='Remote RDT2-FM policy server port.')
+@click.option('--policy_server_api_key', default=None, help='Optional API key header for the remote policy server.')
 # Add global cache for models
 def main(
     input, output, 
@@ -119,7 +149,10 @@ def main(
     steps_per_inference, max_duration,
     frequency,
     instruction, binarize_gripper,
-    interact
+    interact,
+    policy_server_host,
+    policy_server_port,
+    policy_server_api_key
 ):
     # Create tkinter window for visualization
     root = tk.Tk()
@@ -205,15 +238,25 @@ def main(
             
             with open(model_config, "r") as f:
                 model_config = yaml.safe_load(f)
-            
-            model = RDTInferencer(
-                config=model_config,
-                pretrained_path=input,
-                normalizer_path=normalizer_path,
-                pretrained_vision_language_model_name_or_path=pretrained_vision_language_model_name_or_path,
-                device=device,
-                dtype=torch.bfloat16,
-            )
+
+            use_remote_policy = policy_server_host is not None
+            if use_remote_policy:
+                print(f"Connecting to remote policy server at {policy_server_host}:{policy_server_port}...")
+                model = WebsocketClientPolicy(
+                    host=policy_server_host,
+                    port=policy_server_port,
+                    api_key=policy_server_api_key,
+                )
+                print(f"Remote policy metadata: {model.get_server_metadata()}")
+            else:
+                model = RDTInferencer(
+                    config=model_config,
+                    pretrained_path=input,
+                    normalizer_path=normalizer_path,
+                    pretrained_vision_language_model_name_or_path=pretrained_vision_language_model_name_or_path,
+                    device=device,
+                    dtype=torch.bfloat16,
+                )
             # ensure the model is reset
             
             print("Model loaded")
@@ -239,21 +282,17 @@ def main(
                     obs_pose_repr=obs_pose_rep,
                     tx_robot1_robot0=tx_robot1_robot0,
                     episode_start_pose=episode_start_pose)
-                obs_dict = dict_apply(obs_dict_np,
-                    lambda x: torch.from_numpy(x).to(device))
                 print(f"Instruction: {instruction}")
-                result = model.step(
-                    observations={
-                        'images': {
-                            # 'exterior_rs': np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
-                            'left_stereo': obs_dict['camera1_rgb'][-1].cpu().numpy(),
-                            'right_stereo': obs_dict['camera0_rgb'][-1].cpu().numpy(),
-                        },
-                        'state': np.zeros(model_config["common"]["state_dim"]).astype(np.float32)
-                    },
-                    instruction=instruction
+                policy_observation = build_policy_observation(
+                    obs_dict_np=obs_dict_np,
+                    state_dim=model_config["common"]["state_dim"],
+                    instruction=instruction,
                 )
-                action = result.detach().cpu().numpy()
+                action, result = infer_policy_action(
+                    policy=model,
+                    policy_observation=policy_observation,
+                    use_remote_policy=use_remote_policy,
+                )
                 # support unimanual manipulation
                 if len(robots_config) < 2:
                     action = action[..., : 10 * len(robots_config)]
@@ -381,21 +420,18 @@ def main(
                                 obs_pose_repr=obs_pose_rep,
                                 tx_robot1_robot0=tx_robot1_robot0,
                                 episode_start_pose=episode_start_pose)
-                            obs_dict = dict_apply(obs_dict_np,
-                                lambda x: torch.from_numpy(x).to(device))
-                            result = model.step(
-                                observations={
-                                    'images': {
-                                        # 'exterior_rs': np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
-                                        'left_stereo': obs_dict['camera1_rgb'][-1].cpu().numpy(),
-                                        'right_stereo': obs_dict['camera0_rgb'][-1].cpu().numpy(),
-                                    },
-                                    'state': np.zeros(model_config["common"]["state_dim"]).astype(np.float32)
-                                },
-                                instruction=instruction
+                            policy_observation = build_policy_observation(
+                                obs_dict_np=obs_dict_np,
+                                state_dim=model_config["common"]["state_dim"],
+                                instruction=instruction,
+                            )
+                            result, server_result = infer_policy_action(
+                                policy=model,
+                                policy_observation=policy_observation,
+                                use_remote_policy=use_remote_policy,
                             )
                             # ensure the action is unormalized
-                            raw_action = result.detach().cpu().numpy()
+                            raw_action = result
                             
                             # support unimanual manipulation
                             if len(robots_config) < 2:
@@ -408,6 +444,8 @@ def main(
                                 action[:, robot_idx * 7 + 6] = action[:, robot_idx * 7 + 6] / 0.088 * 0.10
                             
                             print('Inference latency:', time.time() - s)
+                            if use_remote_policy:
+                                print('Remote policy timing:', server_result.get('server_timing', {}), server_result.get('policy_timing', {}))
                             t_cycle_end += time.time() - s  # FIXME：do latency matching
                         # NOTE pre-closure
                         for robot_id in range(len(robots_config)):
