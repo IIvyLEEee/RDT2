@@ -13,8 +13,13 @@ from data.umi.common.replay_buffer import ReplayBuffer
 from deploy.umi.common.interpolation_util import PoseInterpolator, get_interp1d
 from deploy.umi.common.timestamp_accumulator import (
     ObsAccumulator, TimestampActionAccumulator)
-from deploy.umi.real_world.camera.multi_mvs_cam import MultiMVSCamera
-from deploy.umi.real_world.camera.mvs_cam import MVSCamControllerConfig
+from deploy.umi.common.usb_util import get_sorted_v4l_paths
+from deploy.umi.real_world.camera.multi_uvc_camera import MultiUvcCamera
+# Our GoPro/UVC setup should not import MVS at module load time. Keep the
+# original imports here for the upstream HikRobot path; the MVS branch imports
+# these lazily below.
+# from deploy.umi.real_world.camera.multi_mvs_cam import MultiMVSCamera
+# from deploy.umi.real_world.camera.mvs_cam import MVSCamControllerConfig
 from deploy.umi.real_world.franka_interpolation_controller import \
     FrankaInterpolationController
 # from deploy.umi.real_world.robotiq_controller import RobotiqController
@@ -79,26 +84,74 @@ class BimanualUmiEnv:
             shm_manager = SharedMemoryManager()
             shm_manager.start()
 
-        # HKVision cameras
-        cam_configs = [
-            MVSCamControllerConfig(
+        camera_type = cameras_config[0].get("camera_type", "mvs") if len(cameras_config) > 0 else "mvs"
+        if camera_type in ["uvc", "gopro"]:
+            v4l_paths = [cam_kwargs.get("dev_video_path") for cam_kwargs in cameras_config]
+            if any(path is None for path in v4l_paths):
+                detected_paths = get_sorted_v4l_paths()
+                if len(detected_paths) < len(cameras_config):
+                    raise RuntimeError(
+                        f"Expected {len(cameras_config)} UVC cameras, but detected {len(detected_paths)}: {detected_paths}"
+                    )
+                v4l_paths = detected_paths[:len(cameras_config)]
+
+            transforms = []
+            capture_resolutions = []
+            capture_fps = []
+            cap_buffer_size = []
+            for cam_kwargs in cameras_config:
+                input_res = tuple(cam_kwargs.get("capture_res", cam_kwargs.get("input_res", (1920, 1080))))
+                output_res = tuple(cam_kwargs["output_res"])
+                image_transform = get_image_transform(
+                    input_res=input_res,
+                    output_res=output_res,
+                    bgr_to_rgb=cam_kwargs.get("bgr_to_rgb", True),
+                )
+
+                def transform(data, image_transform=image_transform):
+                    data["color"] = np.ascontiguousarray(image_transform(data["color"]))
+                    return data
+
+                transforms.append(transform)
+                capture_resolutions.append(input_res)
+                capture_fps.append(cam_kwargs.get("capture_fps", cam_kwargs.get("fps", 60)))
+                cap_buffer_size.append(cam_kwargs.get("cap_buffer_size", 1))
+
+            camera = MultiUvcCamera(
+                dev_video_paths=v4l_paths,
+                shm_manager=shm_manager,
+                resolution=capture_resolutions,
+                capture_fps=capture_fps,
+                put_downsample=False,
+                get_max_k=max_obs_buffer_size,
                 receive_latency=camera_obs_latency,
-                serial=cam_kwargs["serial"],
-                name=f"camera{cam_id}_rgb",
-                fps=cam_kwargs.get("fps", 30),
-                put_desired_frequency=cam_kwargs.get("put_desired_frequency", 30),
-                img_transform_func=get_image_transform(
-                    input_res=cam_kwargs["input_res"],
-                    output_res=cam_kwargs["output_res"],
-                    # obs output rgb
-                    bgr_to_rgb=False
-                ),
-                transformed_width=cam_kwargs["output_res"][0],
-                transformed_height= cam_kwargs["output_res"][1],
+                cap_buffer_size=cap_buffer_size,
+                transform=transforms,
+                verbose=False,
             )
-            for cam_id, cam_kwargs in enumerate(cameras_config)
-        ]
-        camera = MultiMVSCamera(cam_configs)
+        else:
+            from deploy.umi.real_world.camera.multi_mvs_cam import MultiMVSCamera
+            from deploy.umi.real_world.camera.mvs_cam import MVSCamControllerConfig
+
+            cam_configs = [
+                MVSCamControllerConfig(
+                    receive_latency=camera_obs_latency,
+                    serial=cam_kwargs["serial"],
+                    name=f"camera{cam_id}_rgb",
+                    fps=cam_kwargs.get("fps", 30),
+                    put_desired_frequency=cam_kwargs.get("put_desired_frequency", 30),
+                    img_transform_func=get_image_transform(
+                        input_res=cam_kwargs["input_res"],
+                        output_res=cam_kwargs["output_res"],
+                        # obs output rgb
+                        bgr_to_rgb=False
+                    ),
+                    transformed_width=cam_kwargs["output_res"][0],
+                    transformed_height= cam_kwargs["output_res"][1],
+                )
+                for cam_id, cam_kwargs in enumerate(cameras_config)
+            ]
+            camera = MultiMVSCamera(cam_configs)
         multi_cam_vis = None
 
         cube_diag = np.linalg.norm([1,1,1])

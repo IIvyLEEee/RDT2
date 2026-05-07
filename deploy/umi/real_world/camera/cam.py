@@ -1,4 +1,3 @@
-import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
@@ -10,12 +9,13 @@ import cv2
 from deploy.umi.shared_memory.shared_memory_ring_buffer import SharedMemoryRingBuffer
 from deploy.umi.real_world.camera.base import BaseController, BaseControllerConfig
 
-try:
-    sys.path.append("/opt/MVS/Samples/64/Python/MvImport")
-    from MvCameraControl_class import *
-except ImportError:
-    print("Failed to import MvCameraControl_class. Ensure the MVS SDK is installed and the path is correct.")
-
+# MVS SDK is not used in our GoPro/UVC setup. Keep the original MVS import here
+# as a reference for the upstream HikRobot path.
+# try:
+#     sys.path.append("/opt/MVS/Samples/64/Python/MvImport")
+#     from MvCameraControl_class import *
+# except ImportError:
+#     print("Failed to import MvCameraControl_class. Ensure the MVS SDK is installed and the path is correct.")
 
 
 @dataclass
